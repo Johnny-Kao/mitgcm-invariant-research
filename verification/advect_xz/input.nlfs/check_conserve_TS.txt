@@ -1,0 +1,41 @@
+To check tracer conservation in advect_xz/input.nlfs set-up, and in general when
+- using NonLin FreeSurf
+- using or not Adams-Bashforth (used here for Salinity)
+- without temperature/salt/fresh-water forcing
+
+We use stats-diags output (file: dynStDiag) to get global mean T and S values
+every 100 mn (negative stat_freq(1)= -6000., for snap-shot stats-diags),
+and plot the time-series of these quantities.
+
+Instructions:
+  From a standard run with input.nlfs parameter files:
+  > cd advect_xz/tr_run.nlfs
+
+  Get a local copy of 2 utility scripts:
+  > cp ../../../utils/scripts/extract_StD .
+  > cp ../../../utils/matlab/read_StD.m .
+
+  Split multi-variable stats-diags file into variable specific files:
+  > ./extract_StD dynStDiag.0000000000.txt dynStD std
+
+  Plot global stats evolution using matlab:
+  >> grph_StD_AB
+
+figure-3, top-panel: "Avr T" shows the evolution of global averaged (potential)
+ Temperature ; should be flat if conserved.
+
+figure-4, top-panel: "Avr S" shows the evolution of global averaged Salinity.
+
+Since Adams-Bashforth is used (alphAB= 0.6 = 0.5+abEps) for Salt with NonLin-FreeSurf,
+we don't expect to exactly conserve Salt, but should not drift and exactly conserve
+a slightly modified quantity: S_ab = S - alphAB*deltaT*gSnm1
+(see Ocean Modelling 2004 paper, doi:10.1016/S1463-5003(03)00009-X)
+
+After editing grph_StD_AB.m (commenting out the 2nd spec of alphAB):
+  >> grph_StD_AB
+
+figure-3 is unchanged but top-panel on figure-4, now shows the evolution of
+ global averaged S_ab. ; should be flat if conserved.
+Note a problem of conservation at the very 1rst iteration only as the curve
+ is flat afterward. This problem is a post-processing issue and would not be
+ present after a restart.
