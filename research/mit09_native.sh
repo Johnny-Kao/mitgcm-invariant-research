@@ -28,10 +28,16 @@ p.write_text(s)
 PY
   fi
   (cd "$run" && "$binary" > model.log 2>&1)
-  test -f "$run/STDOUT.0000"
-  if grep -iE 'ABNORMAL END|STOP in |ERROR STOP|NaN' "$run/STDOUT.0000" "$run/model.log"; then
+  test -s "$run/model.log"
+  if ! grep -Fq 'Execution ended Normally' "$run/model.log"; then
+    echo "Missing normal completion marker in $name" >&2
+    tail -n 50 "$run/model.log" >&2
+    return 1
+  fi
+  if grep -iE 'ABNORMAL END|STOP in |ERROR STOP' "$run/model.log"; then
     echo "Model reported an error in $name" >&2; return 1
   fi
+  echo "Native model completed: $name"
   test -n "$(find "$run" -name 'T.0000000200*.data' -print -quit)"
   test -n "$(find "$run" -name 'S.0000000200*.data' -print -quit)"
 }
