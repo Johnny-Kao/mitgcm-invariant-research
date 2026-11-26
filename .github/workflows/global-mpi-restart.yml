@@ -1,0 +1,82 @@
+name: Global ocean MPI restart comparison
+on:
+  push:
+    paths:
+      - '.github/workflows/global-mpi-restart.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gfortran openmpi-bin libopenmpi-dev
+      - name: Build and compare native runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          EXP="$ROOT/verification/global_ocean.90x40x15"
+          OUT="$ROOT/research/global-mpi-results"
+          mkdir -p "$OUT"
+          export ROOT EXP OUT
+          sed -i -e "s/nSy =   4/nSy =   2/" -e "s/nPy =   1/nPy =   2/" "$EXP/code/SIZE.h"
+          grep -E "nSy =   2|nPy =   2" "$EXP/code/SIZE.h"
+          export MPI_INC_DIR="$(mpif90 --showme:incdirs | cut -d\  -f1)"
+          cd "$EXP/build"
+          if ! (../../../tools/genmake2 -mods=../code -of=../../../tools/build_options/linux_amd64_gfortran -rootdir=../../.. -disable=mnc -mpi && make depend && make -j2) > "$OUT/build.log" 2>&1; then
+            tail -n 80 "$OUT/build.log"; exit 1
+          fi
+          python3 - <<'PY'
+          import os,pathlib,shutil,subprocess,re,struct,math,json
+          root,exp,out=(pathlib.Path(os.environ[k]) for k in ('ROOT','EXP','OUT'))
+          base=36000
+          def run(name,start,end,previous=None):
+              d=out/name
+              shutil.copytree(exp/'input',d,symlinks=False)
+              for f in (root/'verification/tutorial_global_oce_latlon/input').glob('*.bin'):
+                  if not (d/f.name).exists(): (d/f.name).symlink_to(f)
+              p=d/'data'; s=p.read_text()
+              for key in ('startTime','endTime','nIter0','nTimeSteps','pChkptFreq','chkptFreq','dumpFreq','writeBinaryPrec'):
+                  s=re.sub(r'(?im)^\s*'+key+r'\s*=.*$', '',s)
+              s=s.replace('&PARM01','&PARM01\n writeBinaryPrec=64,',1)
+              s=s.replace('&PARM03',f'&PARM03\n nIter0={start},\n nTimeSteps={end-start},\n pChkptFreq=86400.,\n chkptFreq=0.,\n dumpFreq=86400.,',1)
+              p.write_text(s)
+              if previous:
+                  pickups=list(previous.glob(f'pickup*.{start:010d}.*'))
+                  assert any(f.name.startswith('pickup.') for f in pickups), list(previous.glob('pickup*'))
+                  for f in pickups: shutil.copy2(f,d/f.name)
+              with (d/'model.log').open('w') as log:
+                  rc=subprocess.run(['mpirun','--oversubscribe','-np','2',str(exp/'build/mitgcmuv')],cwd=d,stdout=log,stderr=subprocess.STDOUT).returncode
+              log=(d/'model.log').read_text()+'\n'+ '\n'.join(f.read_text() for f in d.glob('STDOUT.*'))
+              if rc or 'Execution ended Normally' not in log:
+                  print(log[-12000:],flush=True); raise RuntimeError(name)
+              print('Completed',name,flush=True)
+              return d
+          full=run('continuous',base,base+10)
+          for split in (base+5,base+6):
+              a=run('prefix-'+str(split),base,split)
+              b=run('restart-'+str(split),split,base+10,a)
+              for it in (split+1,base+10):
+                  for var in ('T','S','U','V','Eta'):
+                      files=sorted(full.glob(f'{var}.{it:010d}*.data'))
+                      assert files,(var,it)
+                      count=changed=0; maxerr=ss=0.
+                      for f in files:
+                          aa=[v[0] for v in struct.iter_unpack('>d',f.read_bytes())]
+                          bb=[v[0] for v in struct.iter_unpack('>d',(b/f.name).read_bytes())]
+                          assert len(aa)==len(bb) and all(map(math.isfinite,aa+bb))
+                          for x,y in zip(aa,bb):
+                              z=abs(x-y); maxerr=max(maxerr,z); ss+=z*z; count+=1; changed+=z!=0
+                      print(f'split={split} iter={it} {var}: n={count} changed={changed} max_abs={maxerr:.15g} rms={(ss/count)**.5:.15g}',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: global-mpi-restart
+          path: |
+            research/global-mpi-results/build.log
+            research/global-mpi-results/*/model.log
+          retention-days: 7
