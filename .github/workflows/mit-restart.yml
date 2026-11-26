@@ -1,0 +1,82 @@
+name: MIT restart invariant matrix
+on:
+  push:
+    paths:
+      - '.github/workflows/mit-restart.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ab: [2, 3]
+        geometry: [linear, rstar]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Native restart equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          EXP="$ROOT/verification/advect_xz"
+          OUT="$ROOT/research/restart-results"
+          mkdir -p "$OUT"
+          if [[ "${{ matrix.ab }}" == 3 ]]; then
+            sed -i 's/^#undef ALLOW_ADAMSBASHFORTH_3/#define ALLOW_ADAMSBASHFORTH_3/' "$EXP/code/CPP_OPTIONS.h"
+          fi
+          cd "$EXP/build"
+          ../../../tools/genmake2 -mods=../code -of=../../../tools/build_options/linux_amd64_gfortran -rootdir=../../.. > "$OUT/genmake.log" 2>&1
+          make depend > "$OUT/depend.log" 2>&1
+          make -j2 > "$OUT/build.log" 2>&1
+          export EXP OUT GEOMETRY="${{ matrix.geometry }}"
+          python3 - <<'PY'
+          import os,pathlib,shutil,subprocess,re,struct,math
+          exp=pathlib.Path(os.environ['EXP'])
+          out=pathlib.Path(os.environ['OUT'])
+          def run(name,start,end,previous=None):
+              d=out/name
+              shutil.copytree(exp/'input',d,symlinks=False)
+              if os.environ['GEOMETRY']=='rstar':
+                  shutil.copytree(exp/'input.nlfs',d,dirs_exist_ok=True,symlinks=False)
+              p=d/'data'
+              s=p.read_text()
+              for key,value in [('tempAdvScheme','2'),('saltAdvScheme','2'),('startTime',str(start*1200)+'.'),('endTime',str(end*1200)+'.'),('pChkptFreq',str(end*1200)+'.')]:
+                  s,n=re.subn(r'(?m)^(\s*'+key+r'\s*=)[^,\n]+,',lambda m:m.group(1)+value+',',s,flags=re.I)
+                  assert n==1,(key,n)
+              if previous:
+                  s=s.replace('&PARM03','&PARM03\n nIter0='+str(start)+',',1)
+                  pickups=list(previous.glob(f'pickup*.{start:010d}.*'))
+                  assert pickups, list(previous.glob('pickup*'))
+                  for f in pickups: shutil.copy2(f,d/f.name)
+              p.write_text(s)
+              with (d/'model.log').open('w') as log:
+                  subprocess.run([str(exp/'build/mitgcmuv')],cwd=d,stdout=log,stderr=subprocess.STDOUT,check=True)
+              assert 'NORMAL END' in (d/'model.log').read_text(),name
+              assert not re.search(r'ABNORMAL END|ERROR STOP', (d/'model.log').read_text()),name
+              return d
+          full=run('continuous',0,200)
+          for split in (100,101):
+              a=run('prefix-'+str(split),0,split)
+              b=run('restart-'+str(split),split,200,a)
+              for var in ('T','S','U','V','Eta'):
+                  files=sorted(full.glob(f'{var}.0000000200*.data'))
+                  assert files,var
+                  diffs=[]
+                  for f in files:
+                      aa=list(struct.iter_unpack('>d',f.read_bytes()))
+                      bb=list(struct.iter_unpack('>d',(b/f.name).read_bytes()))
+                      assert len(aa)==len(bb)
+                      assert all(math.isfinite(x[0]) for x in aa+bb)
+                      diffs.extend(abs(x[0]-y[0]) for x,y in zip(aa,bb))
+                  print(f'split={split} {var}: n={len(diffs)} max_abs={max(diffs):.15g}',flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: restart-ab${{ matrix.ab }}-${{ matrix.geometry }}
+          path: research/restart-results/
+          retention-days: 7
