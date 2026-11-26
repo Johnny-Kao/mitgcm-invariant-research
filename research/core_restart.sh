@@ -27,7 +27,7 @@ p=pathlib.Path(sys.argv[1]); start,stop=map(int,sys.argv[2:])
 f=p/'data'; s=f.read_text()
 for key in ('startTime','endTime','nIter0','nTimeSteps','pChkptFreq','chkptFreq','dumpFreq'):
     s=re.sub(r'(?im)^\s*'+key+r'\s*=.*$', '',s)
-s=s.replace('&PARM03',f'&PARM03\n nIter0={start},\n startTime={start*1200}.,\n endTime={stop*1200}.,\n pChkptFreq={(stop-start)*1200}.,\n chkptFreq=0.,\n dumpFreq=1200.,')
+s=s.replace('&PARM03',f'&PARM03\n nIter0={start},\n startTime={start*1200}.,\n endTime={stop*1200}.,\n pChkptFreq={stop*1200}.,\n chkptFreq=0.,\n dumpFreq=1200.,')
 for key in ('readBinaryPrec','writeBinaryPrec'):
     s=re.sub(r'(?im)^\s*'+key+r'\s*=.*$', '',s)
 s=s.replace('&PARM01','&PARM01\n readBinaryPrec=64,\n writeBinaryPrec=64,')
