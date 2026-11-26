@@ -40,9 +40,6 @@ jobs:
           import os,pathlib
           p=pathlib.Path(os.environ['ROOT'])/'pkg/streamice/streamice_fields_load.F'
           s=p.read_text()
-          old='''     O                   nmP, nm0, nm1, tmpFac, fac,
-     I                   externForcingCycle, streamice_forcing_period,
-     I                   deltaTClock, myTime,'''
           # match only periodic branch; preserve fixed-form indentation
           old='     O                   nmP, nm0, nm1, tmpFac, fac,\n     I                   externForcingCycle, streamice_forcing_period,\n     I                   deltaTClock, myTime,'
           new=old.replace('tmpFac, fac','fac, tmpFac')
