@@ -22,6 +22,8 @@ jobs:
           OUT="$ROOT/research/streamice-results"
           mkdir -p "$OUT"
           export ROOT EXP OUT
+          sed -i "s/^#undef ALLOW_STREAMICE_TIMEDEP_FORCING/#define ALLOW_STREAMICE_TIMEDEP_FORCING/" "$EXP/code/STREAMICE_OPTIONS.h"
+          grep -q "^#define ALLOW_STREAMICE_TIMEDEP_FORCING" "$EXP/code/STREAMICE_OPTIONS.h"
           python3 - <<'PY'
           import os,pathlib
           p=pathlib.Path(os.environ['ROOT'])/'pkg/streamice/streamice_fields_load.F'
