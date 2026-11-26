@@ -1,0 +1,99 @@
+name: Streamice time interpolation comparison
+on:
+  push:
+    paths:
+      - '.github/workflows/streamice-forcing.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Native model input-record oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          EXP="$ROOT/verification/halfpipe_streamice"
+          OUT="$ROOT/research/streamice-results"
+          mkdir -p "$OUT"
+          export ROOT EXP OUT
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path(os.environ['ROOT'])/'pkg/streamice/streamice_fields_load.F'
+          s=p.read_text()
+          old='       _EXCH_XY_RL(bdot_streamice, myThid )'
+          assert s.count(old)==1
+          s=s.replace(old,"       WRITE(*,*) 'MIT15_MELT', myTime, nm0, nm1, fac,\n     &     bdot_streamice(10,10,1,1)\n"+old)
+          p.write_text(s)
+          PY
+          cd "$EXP/build"
+          if ! (../../../tools/genmake2 -mods=../code -of=../../../tools/build_options/linux_amd64_gfortran -rootdir=../../.. -disable=mnc && make depend && make -j2) > "$OUT/build.log" 2>&1; then
+            tail -n 80 "$OUT/build.log"; exit 1
+          fi
+          cp mitgcmuv "$OUT/original"
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path(os.environ['ROOT'])/'pkg/streamice/streamice_fields_load.F'
+          s=p.read_text()
+          old='''     O                   nmP, nm0, nm1, tmpFac, fac,
+     I                   externForcingCycle, streamice_forcing_period,
+     I                   deltaTClock, myTime,'''
+          # match only periodic branch; preserve fixed-form indentation
+          old='     O                   nmP, nm0, nm1, tmpFac, fac,\n     I                   externForcingCycle, streamice_forcing_period,\n     I                   deltaTClock, myTime,'
+          new=old.replace('tmpFac, fac','fac, tmpFac')
+          assert s.count(old)==1
+          p.write_text(s.replace(old,new))
+          PY
+          rm -f streamice_fields_load.o mitgcmuv
+          make -j2 > "$OUT/rebuild.log" 2>&1
+          cp mitgcmuv "$OUT/alternative"
+          python3 - <<'PY'
+          import os,pathlib,shutil,subprocess,struct,math,re
+          exp,out=(pathlib.Path(os.environ[k]) for k in ('EXP','OUT'))
+          dt=6307200
+          period=2*dt
+          cycle=4*period
+          vals=[1.,2.,3.,4.]
+          for name in ('original','alternative'):
+              d=out/('run-'+name)
+              shutil.copytree(exp/'input',d)
+              p=d/'data'; s=p.read_text().replace('nTimeSteps = 10,','nTimeSteps = 6,\n externForcingCycle='+str(cycle)+'.,')
+              p.write_text(s)
+              p=d/'data.streamice'; s=p.read_text().replace('&STREAMICE_PARM01',"&STREAMICE_PARM01\n STREAMICEBdotTimeDepFile='melt.bin',\n streamice_forcing_period="+str(period)+'.,')
+              p.write_text(s)
+              (d/'melt.bin').write_bytes(b''.join(struct.pack('>d',v)*800 for v in vals))
+              with (d/'model.log').open('w') as f:
+                  rc=subprocess.run([str(out/name)],cwd=d,stdout=f,stderr=subprocess.STDOUT).returncode
+              log=(d/'model.log').read_text()
+              if rc or 'Execution ended Normally' not in log:
+                  print(log[-12000:]); raise RuntimeError(name)
+              samples=[]
+              for line in log.splitlines():
+                  if 'MIT15_MELT' not in line: continue
+                  time,i,j,fac,actual=line.split('MIT15_MELT',1)[1].split()
+                  time,fac,actual=float(time),float(fac),float(actual)
+                  i,j=int(i),int(j)
+                  x=((time-period/2)%cycle)/period
+                  k=math.floor(x); w=x-k
+                  expected=(1-w)*vals[k]+w*vals[(k+1)%4]
+                  assert (i,j)==(k+1,(k+1)%4+1)
+                  samples.append(abs(actual-expected))
+                  print(name,'time',time,'records',i,j,'fac',fac,'expected',expected,'actual',actual,flush=True)
+              assert len(samples)>=4,samples
+              print(name,'n',len(samples),'max abs',max(samples),flush=True)
+              if name=='original': assert max(samples)>.5
+              else: assert max(samples)<1e-10
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: streamice-forcing
+          path: |
+            research/streamice-results/*.log
+            research/streamice-results/run-*/model.log
+          retention-days: 7
